@@ -1,0 +1,102 @@
+#include <Arduino.h>
+#include <TensorFlowLite_ESP32.h>
+#include "tensorflow/lite/micro/all_ops_resolver.h"
+#include "tensorflow/lite/micro/micro_error_reporter.h"
+#include "tensorflow/lite/micro/micro_interpreter.h"
+#include "tensorflow/lite/micro/system_setup.h"
+#include "tensorflow/lite/schema/schema_generated.h"
+#include "model.h"
+
+#define TIME_PERIODS 100
+#define NUM_SENSORS 1
+#define ANALOG_PIN 34 
+#define READ_DELAY 10
+
+namespace {
+  tflite::ErrorReporter* error_reporter = nullptr;
+  const tflite::Model* model = nullptr;
+  tflite::MicroInterpreter* interpreter = nullptr;
+  TfLiteTensor* input = nullptr;
+  TfLiteTensor* output = nullptr;
+
+  constexpr int kTensorArenaSize = 16 * 1024;  // Ukuran buffer tensor arena
+  uint8_t tensor_arena[kTensorArenaSize];
+
+  const char* labels[] = {"Tanpa VM", "VM"};  // Label output
+}
+
+float sensor_data[TIME_PERIODS * NUM_SENSORS];  // Buffer untuk data sensor
+int data_index = 0;  // Indeks untuk data sensor
+
+void setup() {
+  Serial.begin(115200);
+
+  // Inisialisasi TensorFlow Lite
+  static tflite::MicroErrorReporter micro_error_reporter;
+  error_reporter = &micro_error_reporter;
+
+  model = tflite::GetModel(model_g);
+  if (model->version() != TFLITE_SCHEMA_VERSION) {
+    TF_LITE_REPORT_ERROR(error_reporter, 
+                         "Model versi %d tidak sesuai dengan versi %d.",
+                         model->version(), TFLITE_SCHEMA_VERSION);
+    return;
+  }
+
+  static tflite::AllOpsResolver resolver;
+  static tflite::MicroInterpreter static_interpreter(
+      model, resolver, tensor_arena, kTensorArenaSize, error_reporter);
+  interpreter = &static_interpreter;
+
+  if (interpreter->AllocateTensors() != kTfLiteOk) {
+    TF_LITE_REPORT_ERROR(error_reporter, "Gagal AllocateTensors()");
+    return;
+  }
+
+  input = interpreter->input(0);
+  output = interpreter->output(0);
+
+  Serial.println("Inisialisasi selesai. Siap membaca data sensor.");
+}
+
+void loop() {
+  // Baca data dari analogRead
+  float analog_value = analogRead(ANALOG_PIN);
+  sensor_data[data_index] = analog_value;
+  data_index++;
+
+  // Jika sudah terkumpul 100 data (TIME_PERIODS)
+  if (data_index >= TIME_PERIODS * NUM_SENSORS) {
+    // Copy data sensor ke tensor input model
+    for (int i = 0; i < TIME_PERIODS * NUM_SENSORS; i++) {
+      input->data.f[i] = sensor_data[i];
+    }
+
+    // Jalankan inferensi
+    if (interpreter->Invoke() != kTfLiteOk) {
+      TF_LITE_REPORT_ERROR(error_reporter, "Invoke() gagal");
+      return;
+    }
+
+    // Ambil hasil prediksi
+    float max_value = -1.0;
+    int max_index = -1;
+    for (int i = 0; i < 2; i++) {  // Output hanya ada dua kelas
+      float probability = output->data.f[i];
+      if (probability > max_value) {
+        max_value = probability;
+        max_index = i;
+      }
+    }
+
+    // Tampilkan hasil prediksi
+    if (max_index != -1) {
+      Serial.printf("Prediksi: %s (%.2f%%)\n", labels[max_index], max_value * 100);
+    }
+
+    // Reset indeks data
+    data_index = 0;
+  }
+
+  delay(READ_DELAY);  // Sampling setiap 10ms
+}
