@@ -6,6 +6,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
 import cv2
 import serial
+import time
 
 from matplotlib import pyplot as plt
 import numpy
@@ -18,6 +19,30 @@ def feature_normalize(dataset):
     mu = numpy.mean(dataset, axis=0)
     sigma = numpy.std(dataset, axis=0)
     return (dataset - mu)/sigma
+
+def send_serial_data(serial_connection):
+    DELAY1 = 5 #waktu start pembacaan FSR
+    DELAY2 = 15 #waktu start pembacaan ECG
+
+    # perhatikan PARAM1 dan PARAM2
+    # param 'a,3,100' artinya membaca sensor FSR selama 3 detik sebanyak 100 data
+
+    PARAM1 = b'a,3,100\n'
+    PARAM2 = b'b,5,150\n'
+
+    time.sleep(DELAY1)
+    if serial_connection.is_open:
+        serial_connection.write(PARAM1)
+        print(f'Data terkirim: {PARAM1}')
+    else:
+        print('Koneksi serial belum terbuka.')
+
+    time.sleep(DELAY2 - DELAY1)
+    if serial_connection.is_open:
+        serial_connection.write(PARAM2)
+        print(f'Data terkirim: {PARAM2}')
+    else:
+        print('Koneksi serial belum terbuka.')
 
 def play_video(video_label):
     cap = cv2.VideoCapture('videosample.mp4')
@@ -52,38 +77,44 @@ def read_serial_data(serial_connection, result_entry, ax, graph_data, canvas):
         if serial_connection.in_waiting:
             try:
                 data = serial_connection.readline().decode('utf-8').strip()
+                print(data)
                 data_list = data.split(",")
 
-                numeric_data = [float(x) for x in data_list[:100] if x.replace('.', '', 1).isdigit()]
 
-                data_to_predict = feature_normalize(numeric_data)
+                if data_list[-1] == 'a':
 
-                result = model.predict(numpy.array([data_to_predict]))
+                    numeric_data = [float(x) for x in data_list[:100] if x.replace('.', '', 1).isdigit()]
+    
+                    data_to_predict = feature_normalize(numeric_data)
+                    result = model.predict(numpy.array([data_to_predict]))
+                    predicted_index = numpy.argmax(result)
+                    predicted_label = labels[predicted_index]
+                    result_entry.delete(0, tk.END)
+                    result_entry.insert(0, predicted_label)
 
-                predicted_index = numpy.argmax(result)
+                if data_list[-1] == 'b':
 
-                predicted_label = labels[predicted_index]
+                    numeric_data = [float(x) for x in data_list[:-1] if x.replace('.', '', 1).isdigit()]
 
-                result_entry.delete(0, tk.END)
-                result_entry.insert(0, predicted_label)
+                    # print(numeric_data)
 
-                graph_data[:] = numeric_data
-                ax.clear()
-                ax.plot(graph_data)
-                ax.set_title('Graph')
-                ax.set_xlabel('Index')
-                ax.set_ylabel('Value')
-                ax.grid(True)
-                ax.relim()
-                ax.autoscale_view()
-                canvas.draw()
+                    # graph_data[:] = numeric_data
+                    ax.clear()
+                    ax.plot(numeric_data)
+                    ax.set_title('Graph')
+                    ax.set_xlabel('Index')
+                    ax.set_ylabel('Value')
+                    ax.grid(True)
+                    ax.relim()
+                    ax.autoscale_view()
+                    canvas.draw()
 
             except Exception as error:
                 print(error)
 
 def show_main_page(root, selected_port, selected_baudrate, frame_width, frame_height):
     if not selected_port or not selected_baudrate:
-        messagebox.showerror("Error", "Harap pilih port COM dan baudrate.")
+        messagebox.showerror('Error', 'Harap pilih port COM dan baudrate.')
         return
 
     for widget in root.winfo_children():
@@ -109,13 +140,13 @@ def show_main_page(root, selected_port, selected_baudrate, frame_width, frame_he
     graph_data = numpy.zeros(100)
     fig, ax = plt.subplots(figsize=(4, 3), dpi=100)
     ax.plot(graph_data)
-    ax.set_title("Graph")
-    ax.set_xlabel("Index")
-    ax.set_ylabel("Value")
+    ax.set_title('Graph')
+    ax.set_xlabel('Index')
+    ax.set_ylabel('Value')
 
     canvas = FigureCanvasTkAgg(fig, master=frame_bottom_right)
     canvas.draw()
-    canvas.get_tk_widget().pack(expand=True, fill="both")
+    canvas.get_tk_widget().pack(expand=True, fill='both')
 
     serial_thread = Thread(target=read_serial_data, args=(serial_connection, result_entry, ax, graph_data, canvas))
     serial_thread.daemon = True
@@ -139,7 +170,10 @@ def show_main_page(root, selected_port, selected_baudrate, frame_width, frame_he
     video_label = tk.Label(frame_bottom_left, bg='black')
     video_label.pack(expand=True, fill='both')
 
-    tk.Button(frame_buttons, text='MULAI', command=lambda: start_video_thread(video_label)).pack(pady=5, padx=5)
+    tk.Button(frame_buttons, text='MULAI', command=lambda: [
+        start_video_thread(video_label),
+        Thread(target=send_serial_data, args=(serial_connection,)).start()
+    ]).pack(pady=5, padx=5)
     tk.Button(frame_buttons, text='SELESAI', command=root.quit).pack(pady=5, padx=5)
     tk.Button(frame_top_right, text='Good Lift', bg='green', fg='white').pack(pady=10, padx=10)
     tk.Button(frame_top_right, text='Train Again', bg='red', fg='white').pack(pady=10, padx=10)
